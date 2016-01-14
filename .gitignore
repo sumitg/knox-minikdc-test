@@ -1,0 +1,10 @@
+### Java template
+target
+build
+
+*.jar
+*.class
+
+# IntelliJ
+.idea
+*.iml
