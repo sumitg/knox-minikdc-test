@@ -29,16 +29,11 @@ import org.apache.hadoop.security.UserGroupInformation;
 import org.apache.hadoop.security.ssl.KeyStoreTestUtil;
 import org.apache.http.HttpHost;
 import org.apache.http.HttpRequest;
-import org.apache.http.auth.AuthSchemeProvider;
 import org.apache.http.auth.AuthScope;
 import org.apache.http.auth.BasicUserPrincipal;
 import org.apache.http.auth.Credentials;
 import org.apache.http.client.CredentialsProvider;
-import org.apache.http.client.config.AuthSchemes;
 import org.apache.http.client.methods.CloseableHttpResponse;
-import org.apache.http.config.Registry;
-import org.apache.http.config.RegistryBuilder;
-import org.apache.http.impl.auth.SPNegoSchemeFactory;
 import org.apache.http.impl.client.BasicCredentialsProvider;
 import org.apache.http.impl.client.CloseableHttpClient;
 import org.apache.http.impl.client.HttpClients;
@@ -131,26 +126,9 @@ public class SecureClusterTest {
     configuration.set(DFS_SERVER_HTTPS_KEYSTORE_RESOURCE_KEY,
         sslServerConfFile.getName());
 
-    //kerberos setup for http client
-    File jaasConf = setupJaasConf(baseDir, keytab, hdfsPrincipal);
-    System.setProperty("java.security.krb5.conf", kdc.getKrb5conf().getAbsolutePath());
-    System.setProperty("java.security.auth.login.config", jaasConf.getAbsolutePath());
-    System.setProperty("javax.security.auth.useSubjectCredsOnly", "false");
-    System.setProperty("sun.security.krb5.debug", "true");
-
-    //knox setup
-    System.setProperty("gateway.hadoop.kerberos.secured", "true");
-    GatewayTestConfig config = new GatewayTestConfig();
-    config.setGatewayPath( "gateway" );
-    config.setHadoopKerberosSecured(true);
-    config.setKerberosConfig(kdc.getKrb5conf().getAbsolutePath());
-    config.setKerberosLoginConfig(jaasConf.getAbsolutePath());
-    driver.setResourceBase(SecureClusterTest.class);
-    driver.setupLdap(GatewayTestDriver.findFreePort());
-    driver.setupGateway(config, "cluster", createTopology(), true);
-
-
+    setupKnox(baseDir, keytab, hdfsPrincipal);
   }
+
 
   @AfterClass
   public static void cleanupSuite() throws Exception {
@@ -166,9 +144,7 @@ public class SecureClusterTest {
     String method = "GET";
     String uri = driver.getClusterUrl() + "/webhdfs/v1?op=GETHOMEDIRECTORY&user.name=" + userName;
     System.out.println("************************************" + uri);
-//    String uri = String.format("http://localhost:%s/webhdfs/v1?op=GETHOMEDIRECTORY&user.name=%s", nameNodeHttpPort, userName);
     HttpHost target = new HttpHost("localhost", driver.getGatewayPort(), "http");
-    System.out.println("host " + target.getAddress() + " port " + target.getPort());
     HttpRequest request = new BasicHttpRequest(method, uri);
     CloseableHttpResponse response = client.execute(target, request);
     String json = EntityUtils.toString(response.getEntity());
@@ -191,7 +167,6 @@ public class SecureClusterTest {
         return "guest-password";
       }
     });
-
     return HttpClients.custom()
         .setDefaultCredentialsProvider(credentialsProvider)
         .build();
@@ -199,6 +174,23 @@ public class SecureClusterTest {
 
   private static void setupLogging() {
     PropertyConfigurator.configure(ClassLoader.getSystemResource("log4j.properties"));
+  }
+
+  private static void setupKnox(File baseDir, String keytab, String hdfsPrincipal) throws Exception {
+    File jaasConf = setupJaasConf(baseDir, keytab, hdfsPrincipal);
+    System.setProperty("java.security.krb5.conf", kdc.getKrb5conf().getAbsolutePath());
+    System.setProperty("java.security.auth.login.config", jaasConf.getAbsolutePath());
+    System.setProperty("javax.security.auth.useSubjectCredsOnly", "false");
+    System.setProperty("sun.security.krb5.debug", "true");
+    System.setProperty("gateway.hadoop.kerberos.secured", "true");
+    GatewayTestConfig config = new GatewayTestConfig();
+    config.setGatewayPath( "gateway" );
+    config.setHadoopKerberosSecured(true);
+    config.setKerberosConfig(kdc.getKrb5conf().getAbsolutePath());
+    config.setKerberosLoginConfig(jaasConf.getAbsolutePath());
+    driver.setResourceBase(SecureClusterTest.class);
+    driver.setupLdap(GatewayTestDriver.findFreePort());
+    driver.setupGateway(config, "cluster", createTopology(), true);
   }
 
   private static File setupJaasConf(File baseDir, String keyTabFile, String principal) throws IOException {

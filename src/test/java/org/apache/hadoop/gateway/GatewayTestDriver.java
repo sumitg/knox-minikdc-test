@@ -32,11 +32,8 @@ import org.slf4j.LoggerFactory;
 import java.io.File;
 import java.io.FileOutputStream;
 import java.io.IOException;
-import java.io.InputStream;
 import java.net.InetAddress;
 import java.net.ServerSocket;
-import java.net.URI;
-import java.net.URISyntaxException;
 import java.net.URL;
 import java.net.UnknownHostException;
 import java.util.HashMap;
@@ -120,9 +117,6 @@ public class GatewayTestDriver {
     stacksDir.mkdirs();
     //TODO: [sumit] This is a hack for now, need to find a better way to locate the source resources for 'stacks' to be tested
     File stacksSourceDir = new File( targetDir, "test-classes/services");
-//    if (!stacksSourceDir.exists()) {
-//      stacksSourceDir = new File( targetDir.getParentFile().getParent(), pathToStacksSource);
-//    }
     if (stacksSourceDir.exists()) {
       FileUtils.copyDirectoryToDirectory(stacksSourceDir, stacksDir);
     }
@@ -159,21 +153,6 @@ public class GatewayTestDriver {
     URL url = ClassLoader.getSystemResource( getResourceName( resource ) );
     assertThat( "Failed to find test resource " + resource, url, Matchers.notNullValue() );
     return url;
-  }
-
-  public InputStream getResourceStream( String resource ) throws IOException {
-    InputStream stream = null;
-    if( resource.startsWith( "file:/" ) ) {
-      try {
-        stream = FileUtils.openInputStream( new File( new URI( resource ) ) );
-      } catch( URISyntaxException e ) {
-        throw new IOException( e  );
-      }
-    } else {
-      stream = ClassLoader.getSystemResourceAsStream( getResourceName( resource ) );
-    }
-    assertThat( "Failed to find test resource " + resource, stream, Matchers.notNullValue() );
-    return stream;
   }
 
   public static int findFreePort() throws IOException {
