@@ -17,6 +17,8 @@
  */
 package org.apache.hadoop.gateway;
 
+import com.mycila.xmltool.XMLDoc;
+import com.mycila.xmltool.XMLTag;
 import org.apache.hadoop.fs.Path;
 import org.apache.hadoop.hdfs.HdfsConfiguration;
 import org.apache.hadoop.hdfs.MiniDFSCluster;
@@ -29,6 +31,7 @@ import org.apache.http.HttpHost;
 import org.apache.http.HttpRequest;
 import org.apache.http.auth.AuthSchemeProvider;
 import org.apache.http.auth.AuthScope;
+import org.apache.http.auth.BasicUserPrincipal;
 import org.apache.http.auth.Credentials;
 import org.apache.http.client.CredentialsProvider;
 import org.apache.http.client.config.AuthSchemes;
@@ -65,6 +68,8 @@ public class SecureClusterTest {
   static int nameNodeHttpPort = 50070;
   static String userName;
 
+  public static GatewayTestDriver driver = new GatewayTestDriver();
+
 
   @BeforeClass
   public static void setupSuite() throws Exception {
@@ -79,7 +84,7 @@ public class SecureClusterTest {
         .build();
   }
 
-  public static void initKdc() throws Exception {
+  private static void initKdc() throws Exception {
     File baseDir = new File(KeyStoreTestUtil.getClasspathDir(SecureClusterTest.class));
     Properties kdcConf = MiniKdc.createConf();
     kdc = new MiniKdc(kdcConf, baseDir);
@@ -89,7 +94,7 @@ public class SecureClusterTest {
     SecurityUtil.setAuthenticationMethod(UserGroupInformation.AuthenticationMethod.KERBEROS, configuration);
     UserGroupInformation.setConfiguration(configuration);
     assertTrue("Expected configuration to enable security", UserGroupInformation.isSecurityEnabled());
-    userName = UserGroupInformation.getLoginUser().getShortUserName();
+    userName = UserGroupInformation.createUserForTesting("guest", new String[]{"users"}).getUserName();
     File keytabFile = new File(baseDir, userName + ".keytab");
     String keytab = keytabFile.getAbsolutePath();
     // Windows will not reverse name lookup "127.0.0.1" to "localhost".
@@ -113,6 +118,9 @@ public class SecureClusterTest {
     configuration.set(DFS_DATANODE_HTTPS_ADDRESS_KEY, "localhost:0");
     configuration.set(DFS_JOURNALNODE_HTTPS_ADDRESS_KEY, "localhost:0");
     configuration.setInt(IPC_CLIENT_CONNECT_MAX_RETRIES_KEY, 10);
+    configuration.set("hadoop.proxyuser." + userName + ".hosts", "*");
+    configuration.set("hadoop.proxyuser." + userName + ".groups", "*");
+    configuration.setBoolean("dfs.permissions", true);
 
     String keystoresDir = baseDir.getAbsolutePath();
     File sslClientConfFile = new File(keystoresDir + "/ssl-client.xml");
@@ -130,12 +138,25 @@ public class SecureClusterTest {
     System.setProperty("javax.security.auth.useSubjectCredsOnly", "false");
     System.setProperty("sun.security.krb5.debug", "true");
 
+    //knox setup
+    System.setProperty("gateway.hadoop.kerberos.secured", "true");
+    GatewayTestConfig config = new GatewayTestConfig();
+    config.setGatewayPath( "gateway" );
+    config.setHadoopKerberosSecured(true);
+    config.setKerberosConfig(kdc.getKrb5conf().getAbsolutePath());
+    config.setKerberosLoginConfig(jaasConf.getAbsolutePath());
+    driver.setResourceBase(SecureClusterTest.class);
+    driver.setupLdap(GatewayTestDriver.findFreePort());
+    driver.setupGateway(config, "cluster", createTopology(), true);
+
+
   }
 
   @AfterClass
   public static void cleanupSuite() throws Exception {
     kdc.stop();
     miniDFSCluster.shutdown();
+    driver.cleanup();
   }
 
   @Test
@@ -143,16 +164,18 @@ public class SecureClusterTest {
     setupLogging();
     CloseableHttpClient client = getHttpClient();
     String method = "GET";
-    String uri = String.format("http://localhost:%s/webhdfs/v1?op=GETHOMEDIRECTORY&user.name=%s", nameNodeHttpPort, userName);
-    HttpHost target = new HttpHost("localhost", nameNodeHttpPort, "http");
+    String uri = driver.getClusterUrl() + "/webhdfs/v1?op=GETHOMEDIRECTORY&user.name=" + userName;
+    System.out.println("************************************" + uri);
+//    String uri = String.format("http://localhost:%s/webhdfs/v1?op=GETHOMEDIRECTORY&user.name=%s", nameNodeHttpPort, userName);
+    HttpHost target = new HttpHost("localhost", driver.getGatewayPort(), "http");
     System.out.println("host " + target.getAddress() + " port " + target.getPort());
     HttpRequest request = new BasicHttpRequest(method, uri);
     CloseableHttpResponse response = client.execute(target, request);
     String json = EntityUtils.toString(response.getEntity());
     response.close();
+    System.out.println(json);
 
     assertEquals("{\"Path\":\"/user/" + userName + "\"}", json);
-    System.out.println(json);
   }
 
   private CloseableHttpClient getHttpClient() {
@@ -160,21 +183,16 @@ public class SecureClusterTest {
     credentialsProvider.setCredentials(AuthScope.ANY, new Credentials() {
       @Override
       public Principal getUserPrincipal() {
-        return null;
+        return new BasicUserPrincipal("guest");
       }
 
       @Override
       public String getPassword() {
-        return null;
+        return "guest-password";
       }
     });
 
-    Registry<AuthSchemeProvider> authSchemeRegistry = RegistryBuilder.<AuthSchemeProvider>create()
-        .register(AuthSchemes.SPNEGO, new SPNegoSchemeFactory(true))
-        .build();
-
     return HttpClients.custom()
-        .setDefaultAuthSchemeRegistry(authSchemeRegistry)
         .setDefaultCredentialsProvider(credentialsProvider)
         .build();
   }
@@ -207,6 +225,61 @@ public class SecureClusterTest {
     writer.write(content);
     writer.close();
     return file;
+  }
+
+  /**
+   * Creates a topology that is deployed to the gateway instance for the test suite.
+   * Note that this topology is shared by all of the test methods in this suite.
+   * @return A populated XML structure for a topology file.
+   */
+  private static XMLTag createTopology() {
+    XMLTag xml = XMLDoc.newDocument(true)
+        .addRoot("topology")
+        .addTag( "gateway" )
+        .addTag( "provider" )
+        .addTag("role").addText("webappsec")
+        .addTag("name").addText("WebAppSec")
+        .addTag("enabled").addText("true")
+        .addTag( "param" )
+        .addTag("name").addText("csrf.enabled")
+        .addTag("value").addText("true").gotoParent().gotoParent()
+        .addTag("provider")
+        .addTag("role").addText("authentication")
+        .addTag("name").addText("ShiroProvider")
+        .addTag("enabled").addText("true")
+        .addTag( "param" )
+        .addTag("name").addText("main.ldapRealm")
+        .addTag("value").addText("org.apache.hadoop.gateway.shirorealm.KnoxLdapRealm").gotoParent()
+        .addTag( "param" )
+        .addTag("name").addText("main.ldapRealm.userDnTemplate")
+        .addTag( "value" ).addText("uid={0},ou=people,dc=hadoop,dc=apache,dc=org").gotoParent()
+        .addTag( "param" )
+        .addTag("name").addText("main.ldapRealm.contextFactory.url")
+        .addTag( "value" ).addText(driver.getLdapUrl()).gotoParent()
+        .addTag( "param" )
+        .addTag("name").addText("main.ldapRealm.contextFactory.authenticationMechanism")
+        .addTag( "value" ).addText("simple").gotoParent()
+        .addTag( "param" )
+        .addTag("name").addText("urls./**")
+        .addTag( "value" ).addText("authcBasic").gotoParent().gotoParent()
+        .addTag("provider")
+        .addTag("role").addText("identity-assertion")
+        .addTag("enabled").addText("true")
+        .addTag("name").addText("Default").gotoParent()
+        .addTag("provider")
+        .addTag( "role" ).addText( "authorization" )
+        .addTag( "enabled" ).addText( "true" )
+        .addTag("name").addText("AclsAuthz").gotoParent()
+        .addTag("param")
+        .addTag("name").addText( "webhdfs-acl" )
+        .addTag("value").addText("hdfs;*;*").gotoParent()
+        .gotoRoot()
+        .addTag("service")
+        .addTag("role").addText("WEBHDFS")
+        .addTag("url").addText("http://localhost:50070/webhdfs/").gotoParent()
+        .gotoRoot();
+//     System.out.println( "GATEWAY=" + xml.toString() );
+    return xml;
   }
 
 }
